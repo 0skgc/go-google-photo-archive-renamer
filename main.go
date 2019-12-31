@@ -20,8 +20,6 @@ const timeStampFormat = "20060102-150405"
 
 var pathSplit = regexp.MustCompile(`([^\(\)]*)(\(\d+\))?(\.\w+)`)
 var jsonExtRegex = regexp.MustCompile(`^(?i)\.json$`)
-var jpegExtRegex = regexp.MustCompile(`^(?i)\.jpe?g$`)
-var heicExtRegex = regexp.MustCompile(`^(?i)\.heic$`)
 
 var timestampMap = map[string]int{}
 var renamedExtMap = map[string]int{}
@@ -150,9 +148,6 @@ func getMetaFromJSON(path string) (*meta, error) {
 }
 
 func getMetaFromJpeg(path string) (*meta, error) {
-	if !isJpeg(path) {
-		return nil, fmt.Errorf("%v not supported", path)
-	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -174,9 +169,6 @@ func getMetaFromJpeg(path string) (*meta, error) {
 }
 
 func getMetaFromHeic(path string) (*meta, error) {
-	if !isHeic(path) {
-		return nil, fmt.Errorf("%v not supported", path)
-	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -227,12 +219,6 @@ func isJSON(path string) bool {
 	return jsonExtRegex.MatchString(filepath.Ext(path))
 }
 
-func isJpeg(path string) bool {
-	return jpegExtRegex.MatchString(filepath.Ext(path))
-}
-func isHeic(path string) bool {
-	return heicExtRegex.MatchString(filepath.Ext(path))
-}
 func getJSONPath(path string) (string, error) {
 	if isJSON(path) {
 		return path, nil
