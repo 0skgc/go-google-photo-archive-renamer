@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/jdeng/goheif"
 	"github.com/rwcarlsen/goexif/exif"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -18,11 +19,13 @@ import (
 
 const timeStampFormat = "20060102-150405"
 
-var pathSplit = regexp.MustCompile(`([^\(\)]*)(\(\d+\))?(\.\w+)`)
+var metaJsonPathSplit = regexp.MustCompile(`([^.]+)(\.\w+)(\(\d+\))?(\.\w+)`)
+var pathSplit = regexp.MustCompile(`([^()]*)(\(\d+\))?(\.\w+)`)
 var jsonExtRegex = regexp.MustCompile(`^(?i)\.json$`)
 
 var timestampMap = map[string]int{}
 var renamedExtMap = map[string]int{}
+var copyMetaJsonCount int
 var unRenamedExtMap = map[string]int{}
 
 // GooglePhotoMeta json struct
@@ -58,11 +61,15 @@ func main() {
 		log.Print("rename mode")
 	}
 
-	err := renameForDirFiles(targetDir, isDryrun)
-	if err != nil {
+	if err := normalizeMetaJsonFiles(targetDir, isDryrun); err != nil {
 		log.Fatalf("error %+v\n", err)
 	}
 
+	if err := renameForDirFiles(targetDir, isDryrun); err != nil {
+		log.Fatalf("error %+v\n", err)
+	}
+
+	log.Printf("# Copy meta json: %v", copyMetaJsonCount)
 	log.Print("# Renamed Ext")
 	for k, v := range renamedExtMap {
 		log.Printf("  - %v: %v", k, v)
@@ -71,6 +78,71 @@ func main() {
 	for k, v := range unRenamedExtMap {
 		log.Printf("  - %v: %v", k, v)
 	}
+}
+
+func normalizeMetaJsonFiles(targetDir string, isDryrun bool) error {
+	files, err := ioutil.ReadDir(targetDir)
+	if err != nil {
+		return err
+	}
+
+	const HEICExt = ".HEIC"
+	const MP4Ext = ".MP4"
+	for _, file := range files {
+		path := filepath.Join(targetDir, file.Name())
+		if !isJSON(path) {
+			continue
+		}
+		submatch := metaJsonPathSplit.FindStringSubmatch(path)
+		if submatch == nil {
+			continue
+		}
+		baseFilePath := submatch[1]
+		baseFileExt := submatch[2]
+		baseFileNumber := submatch[3]
+		jsonFileExt := submatch[4]
+
+		// iPhoneのLivePhotosの場合、画像ファイルと対になるMP4ファイルのJSONがない場合があるので、jsonを複製する
+		// 画像ファイルはHEIC限定とする
+		if !strings.EqualFold(baseFileExt, HEICExt) || baseFileExt == "" {
+			continue
+		}
+		mp4Path := baseFilePath + baseFileNumber + MP4Ext
+		if _, err := os.Stat(mp4Path); os.IsNotExist(err) {
+			continue
+		}
+		mp4JsonPath := baseFilePath + MP4Ext + baseFileNumber + jsonFileExt
+		if _, err := os.Stat(mp4JsonPath); os.IsExist(err) {
+			continue
+		}
+		if isDryrun {
+			log.Printf("Copy(dryrun) to json meta file : %v", mp4JsonPath)
+		} else {
+			if err := copyMetaJsonFile(path, mp4JsonPath); err != nil {
+				return err
+			}
+			log.Printf("Copy to json meta file : %v", mp4JsonPath)
+		}
+		copyMetaJsonCount = copyMetaJsonCount + 1
+	}
+	return nil
+}
+
+func copyMetaJsonFile(srcJsonPath string, dstJsonPath string) error {
+	src, err := os.Open(srcJsonPath)
+	if err != nil {
+		panic(err)
+	}
+	defer src.Close()
+	dst, err := os.Create(dstJsonPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
 }
 
 func renameForDirFiles(targetDir string, isDryrun bool) error {
@@ -85,7 +157,7 @@ func renameForDirFiles(targetDir string, isDryrun bool) error {
 			continue
 		}
 
-		fileExt := filepath.Ext(path)
+		fileExt := strings.ToUpper(filepath.Ext(path))
 		meta, err := getMetaFromJSON(path)
 		if err != nil {
 			meta, err = getMetaFromJpeg(path)
@@ -108,12 +180,18 @@ func renameForDirFiles(targetDir string, isDryrun bool) error {
 		baseName := getFileNameWithoutExt(path)
 
 		newNameFromPath := strings.Replace(path, baseName, formatTimestamp, 1)
-		rename(isDryrun, path, newNameFromPath, meta.photoTakenTime)
+
+		if err := rename(isDryrun, path, newNameFromPath, meta.photoTakenTime); err != nil {
+			return err
+		}
 
 		if meta.jsonPath != "" {
 			jsonBaseName := getFileNameWithoutExt(meta.jsonPath)
 			newNameFromJSON := strings.Replace(meta.jsonPath, jsonBaseName, formatTimestamp+filepath.Ext(newNameFromPath), 1)
-			rename(isDryrun, meta.jsonPath, newNameFromJSON, meta.photoTakenTime)
+
+			if err := rename(isDryrun, meta.jsonPath, newNameFromJSON, meta.photoTakenTime); err != nil {
+				return err
+			}
 		}
 
 		extCount := renamedExtMap[fileExt]
@@ -154,17 +232,17 @@ func getMetaFromJpeg(path string) (*meta, error) {
 	}
 	defer file.Close()
 
-	exif, err := exif.Decode(file)
+	decode, err := exif.Decode(file)
 	if err != nil {
 		return nil, fmt.Errorf("%v parse: %v", path, err)
 	}
-	time, err := exif.DateTime()
+	dateTime, err := decode.DateTime()
 	if err != nil {
 		return nil, err
 	}
 	return &meta{
 		"",
-		time,
+		dateTime,
 	}, nil
 }
 
@@ -179,17 +257,17 @@ func getMetaFromHeic(path string) (*meta, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%v open: %v", path, err)
 	}
-	exif, err := exif.Decode(bytes.NewReader(bin))
+	decode, err := exif.Decode(bytes.NewReader(bin))
 	if err != nil {
 		return nil, fmt.Errorf("%v parse: %v", path, err)
 	}
-	time, err := exif.DateTime()
+	dateTime, err := decode.DateTime()
 	if err != nil {
 		return nil, err
 	}
 	return &meta{
 		"",
-		time,
+		dateTime,
 	}, nil
 }
 
@@ -211,7 +289,10 @@ func rename(isDryrun bool, oldPath string, newPath string, time time.Time) error
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return err
 	}
-	os.Chtimes(newPath, time, time)
+
+	if err := os.Chtimes(newPath, time, time); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -244,5 +325,9 @@ func getJSONPath(path string) (string, error) {
 }
 
 func getFileNameWithoutExt(path string) string {
-	return filepath.Base(path[:len(path)-len(filepath.Ext(path))])
+	return filepath.Base(getPathWithoutExt(path))
+}
+
+func getPathWithoutExt(path string) string {
+	return path[:len(path)-len(filepath.Ext(path))]
 }
