@@ -112,7 +112,7 @@ func normalizeMetaJsonFiles(targetDir string, isDryrun bool) error {
 			continue
 		}
 		mp4JsonPath := baseFilePath + MP4Ext + baseFileNumber + jsonFileExt
-		if _, err := os.Stat(mp4JsonPath); os.IsExist(err) {
+		if _, err := os.Stat(mp4JsonPath); err == nil {
 			continue
 		}
 		if isDryrun {
