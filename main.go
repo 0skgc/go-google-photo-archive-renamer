@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/jdeng/goheif"
+	"github.com/adrium/goheif"
 	"github.com/rwcarlsen/goexif/exif"
 	"io"
 	"io/ioutil"
